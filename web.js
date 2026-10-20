@@ -38,7 +38,7 @@ window.VB = {
   cfgUrl: function () { var u = get('vellum.cfgUrl', ''); return okUrl(u) ? u : ''; },
   saveCfg: function (b) { if (b && b.length <= 16384) put('vellum.cfgJson', b); },
   loadCfg: function () { return VB.cfgUrl() ? get('vellum.cfgJson', '') : ''; },
-  appVersion: function () { return '1.0'; },
+  appVersion: function () { return '1.1'; },
   otaReady: function () { return ''; },
   tzOffset: function (tz) {
     try {
@@ -88,7 +88,7 @@ function render(msg) {
     row('Clock', s.h24 ? '24-hour' : '12-hour', 'clock') + row('Auto-advance', s.rotate ? s.rotate + ' s' : 'off', 'rotate') +
     row('Theme', s.theme === 'paper' ? 'Paper (light)' : 'Ink (dark)', 'theme') +
     '<div class="snote dim">' + (msg ? esc(msg) : 'A new config version overrides changes made here.') + '</div>' +
-    '<div class="snote dim">Keys: N/Space next \u00b7 P prev \u00b7 1\u20139 jump \u00b7 R refresh \u00b7 A hold \u00b7 T theme \u00b7 F full screen \u00b7 S settings. Swipe or tap the sides to flip pages.<br>Data: Open-Meteo, CoinGecko, CNBC quotes, Wikipedia, Hacker News (Algolia). No accounts, no tracking.</div></div>';
+    '<div class="snote dim">Keys: N/Space next \u00b7 P prev \u00b7 1\u20139 jump \u00b7 R refresh \u00b7 A hold \u00b7 T theme \u00b7 F full screen \u00b7 S settings. Swipe or tap the sides to flip pages.<br>Data: Open-Meteo, CNBC quotes, CoinGecko (optional), Wikipedia, Hacker News (Algolia). No accounts, no tracking.</div></div>';
 }
 function panel(on) { open = on; el('sett').style.display = on ? 'block' : 'none'; if (on) render(); }
 function changed() { window.Vellum.settingsChanged(); render(); }

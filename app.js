@@ -54,7 +54,7 @@ function urls(name) {
   }
   if (name === 'mk') return ['https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=' + mkList().coins.join(',') + '&sparkline=true&price_change_percentage=24h', '', 300];
   if (name === 'stq')                  // CNBC quote service (keyless, CORS *): price, change %, session, all tickers in one call
-    return ['https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol?symbols=' + encodeURIComponent(mkList().stocks.join('|')) + '&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json', '', 300];
+    return ['https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol?symbols=' + encodeURIComponent(mkSyms().map(cnbc).join('|')) + '&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json', '', 300];
   if (name.substr(0, 3) === 'sc:')     // CNBC daily bars (keyless, CORS *) for the 1-month sparkline
     return ['https://ts-api.cnbc.com/harmony/app/charts/1M.json?symbol=' + encodeURIComponent(name.substr(3)), '', 3600];
   if (name === 'itn') {                // Wikipedia "In the news" + most read (BBC RSS has no CORS)
@@ -66,19 +66,35 @@ function urls(name) {
 }
 var SRC_FOR = { weather: 'wx', markets: 'mk', headlines: 'itn', hackernews: 'hn', onthisday: 'otd' };
 var TALL = false, FACE_H = 584;
-var DEFAULT_STOCKS = ['SPY', 'QQQ', 'DIA'], DEFAULT_COINS = ['bitcoin', 'ethereum', 'solana'];
-function mkList() {
-  var st = (CFG && CFG.stocks) ? CFG.stocks : DEFAULT_STOCKS, co = (CFG && CFG.coins) ? CFG.coins : DEFAULT_COINS;
-  st = st.slice(0, 8); co = co.slice(0, Math.max(0, 8 - st.length));
-  return { stocks: st, coins: co };
+var DEFAULT_STOCKS = ['SPY', 'QQQ', 'DIA'], DEFAULT_COINS = [];
+// tickers (MSFT, BRK.B), indexes (^GSPC) and futures (CL=F), Yahoo-style: strict, length-limited
+var SYM_RE = /^\^?[A-Z][A-Z0-9.=-]{0,9}$/, MKNAME_RE = /^[A-Za-z0-9 &.,'()+\/-]{1,24}$/;
+var MK_NAMES = { SPY: 'S&P 500 ETF', QQQ: 'Nasdaq 100 ETF', DIA: 'Dow ETF', '^GSPC': 'S&P 500', '^DJI': 'Dow', '^IXIC': 'Nasdaq', 'CL=F': 'Crude Oil', 'GC=F': 'Gold', 'NG=F': 'Nat Gas', 'SI=F': 'Silver' };
+// Yahoo index / front-month futures symbols -> CNBC quote symbols (the browser can only reach CNBC: CORS)
+var CNBC_SYM = { '^GSPC': '.SPX', '^DJI': '.DJI', '^IXIC': '.IXIC', 'CL=F': '@CL.1', 'GC=F': '@GC.1', 'NG=F': '@NG.1', 'SI=F': '@SI.1' };
+function cnbc(sym) { return Object.prototype.hasOwnProperty.call(CNBC_SYM, sym) ? CNBC_SYM[sym] : sym; }
+function isWatch(sym) { return /[\^=]/.test(sym); }          // index or futures contract
+function mkName(sym, fb) {
+  var n = CFG && CFG.names; if (n && Object.prototype.hasOwnProperty.call(n, sym)) return n[sym];
+  return Object.prototype.hasOwnProperty.call(MK_NAMES, sym) ? MK_NAMES[sym] : (fb || sym);
+}
+function mkList() {   // stocks + watch (indexes, futures), deduped, at most 8 rows with coins
+  var st = (CFG && CFG.stocks) ? CFG.stocks : DEFAULT_STOCKS, w = (CFG && CFG.watch) ? CFG.watch : [], co = (CFG && CFG.coins) ? CFG.coins : DEFAULT_COINS;
+  var all = [], seen = {}, i, a = st.concat(w), out = { stocks: [], watch: [], coins: [] };
+  for (i = 0; i < a.length && all.length < 8; i++) if (!seen[a[i]]) { seen[a[i]] = 1; all.push(a[i]); }
+  for (i = 0; i < all.length; i++) (isWatch(all[i]) ? out.watch : out.stocks).push(all[i]);
+  out.coins = co.slice(0, Math.max(0, 8 - all.length));
+  return out;
 }
 function srcsFor(face) {
   if (face !== 'markets') return SRC_FOR[face] ? [SRC_FOR[face]] : [];
   var m = mkList(), out = m.coins.length ? ['mk'] : [];
-  if (m.stocks.length) out.push('stq');
-  for (var i = 0; i < m.stocks.length; i++) out.push('sc:' + m.stocks[i]);
+  var a = m.stocks.concat(m.watch);
+  if (a.length) out.push('stq');
+  for (var i = 0; i < a.length; i++) out.push('sc:' + cnbc(a[i]));
   return out;
 }
+function mkSyms() { var m = mkList(); return m.stocks.concat(m.watch); }
 
 function strip(h) { var d = document.createElement('div'); d.innerHTML = String(h || '').replace(/<(script|style|img)[^>]*>[\s\S]*?<\/\1>|<img[^>]*>/gi, ''); return (d.textContent || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, ''); }
 function shortName(n) { return String(n).replace(/,? (Inc\.?|Corp\.?|Corporation|Co\.?|Ltd\.?|plc|Holdings|Technologies|Class [A-C])(?=\s|,|$)/gi, '').replace(/\s+$/, ''); }
@@ -297,30 +313,47 @@ function stockState(list) {   // session as reported by the quote service
   var d = new Date(q.t);
   return 'CLOSED \u00b7 LAST ' + (d.getDay() !== new Date().getDay() ? DAY[d.getDay()].substr(0, 3).toUpperCase() + ' ' : '') + fmtTime(d, true);
 }
-function mkRow(i, sym, name, price, chg, series, last) {
-  var p = money(price);
+function wmoney(v) {   // indexes and futures: 2 decimals (3 under $10), like the iPhone Stocks app
+  var s = v.toFixed(v < 10 ? 3 : 2), p = s.split('.');
+  p[0] = p[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return p;
+}
+function mkRow(i, sym, name, price, chg, series, last, kind) {
+  var p = kind ? wmoney(price) : money(price), cur = kind === 'idx' ? '' : '$';
   return '<div class="mrow rule' + (last ? ' last' : '') + '" id="mrow' + i + '"><div class="msym">' + esc(sym) + '</div><div class="mnm dim">' + esc(clip(name, 22)) + '</div>' +
-    '<div class="mpx num">$' + p[0] + (p[1] ? '<small>.' + p[1] + '</small>' : '') + '</div>' +
+    '<div class="mpx num">' + cur + p[0] + (p[1] ? '<small>.' + p[1] + '</small>' : '') + '</div>' +
     '<div class="mchg ' + (chg >= 0 ? 'up' : 'dn') + '">' + (chg >= 0 ? '\u25b2 +' : '\u25bc \u2212') + Math.abs(chg).toFixed(2) + '%</div></div>';
 }
 R.markets = function (f) {
-  var ml = mkList(), coins = src.mk && src.mk.data, stocks = [], i, haveAny = false;
+  var ml = mkList(), coins = src.mk && src.mk.data, stocks = [], watch = [], i, haveAny = false;
   var sq = src.stq && src.stq.data;
-  for (i = 0; i < ml.stocks.length; i++) {
-    var sd = sq && sq[ml.stocks[i]], sc = src['sc:' + ml.stocks[i]];
+  function quote(sym) {
+    var cs = cnbc(sym), sd = sq && sq[cs], sc = src['sc:' + cs];
     if (sd) { sd.closes = sc && sc.data ? sc.data.concat(sc.data[sc.data.length - 1] !== sd.price ? [sd.price] : []) : null; haveAny = true; }
-    stocks.push(sd || null);
+    return sd || null;
   }
-  if (coins && coins.length) haveAny = true;
+  for (i = 0; i < ml.stocks.length; i++) stocks.push(quote(ml.stocks[i]));
+  for (i = 0; i < ml.watch.length; i++) watch.push(quote(ml.watch[i]));
+  if (ml.coins.length && coins && coins.length) haveAny = true;
   if (!haveAny) { f.innerHTML = kicker('Markets', 'USD') + waiting('prices'); return; }
-  var n = ml.stocks.length + ml.coins.length, rowH = Math.min(TALL ? 200 : 96, Math.floor((FACE_H - 64 - (ml.stocks.length && ml.coins.length ? 2 : 1) * 34) / Math.max(1, n)));
+  var nsec = (ml.stocks.length ? 1 : 0) + (ml.watch.length ? 1 : 0) + (ml.coins.length ? 1 : 0);
+  var n = ml.stocks.length + ml.watch.length + ml.coins.length, rowH = Math.min(TALL ? 200 : 96, Math.floor((FACE_H - 64 - nsec * 34) / Math.max(1, n)));
   var h = kicker('Markets', 'USD \u00b7 DAY CHANGE'), rows = [], k = 0;
   if (ml.stocks.length) {
     h += '<div class="msec"><span>STOCKS</span><span class="mst dim">' + stockState(stocks) + '</span><span class="m7 dim">1 MONTH</span></div>';
     for (i = 0; i < ml.stocks.length; i++) {
       var q = stocks[i];
-      if (q) { h += mkRow(k, q.sym, q.name, q.price, q.chg, q.closes, i === ml.stocks.length - 1); rows.push(q.closes); }
+      if (q) { h += mkRow(k, ml.stocks[i], mkName(ml.stocks[i], q.name), q.price, q.chg, q.closes, i === ml.stocks.length - 1); rows.push(q.closes); }
       else { h += '<div class="mrow rule" id="mrow' + k + '"><div class="msym">' + esc(ml.stocks[i]) + '</div><div class="mnm dim">NO QUOTE YET</div></div>'; rows.push(null); }
+      k++;
+    }
+  }
+  if (ml.watch.length) {   // indexes + futures: friendly name big, symbol small
+    h += '<div class="msec"><span>INDEX \u00b7 FUTURES</span><span class="m7 dim">1 MONTH</span></div>';
+    for (i = 0; i < ml.watch.length; i++) {
+      var wq = watch[i], ws = ml.watch[i];
+      if (wq) { h += mkRow(k, mkName(ws, wq.name), ws, wq.price, wq.chg, wq.closes, i === ml.watch.length - 1, ws.charAt(0) === '^' ? 'idx' : 'fut'); rows.push(wq.closes); }
+      else { h += '<div class="mrow rule" id="mrow' + k + '"><div class="msym">' + esc(mkName(ws)) + '</div><div class="mnm dim">' + esc(ws) + ' \u00b7 NO QUOTE YET</div></div>'; rows.push(null); }
       k++;
     }
   }
@@ -414,20 +447,29 @@ function vCustom(v) {
   }
   return c;
 }
+function vSyms(a) {
+  if (!(a instanceof Array) || a.length > 8) return null;
+  var o = [], seen = {};
+  for (var i = 0; i < a.length; i++) { var t = a[i]; if (typeof t !== 'string' || !SYM_RE.test(t)) return null; if (!seen[t]) { seen[t] = 1; o.push(t); } }
+  return o;
+}
 function vMarkets(v) {
   if (!v || typeof v !== 'object' || v instanceof Array) return null;
-  var m = { stocks: null, coins: null }, i, seen;
-  if (v.stocks !== undefined) {
-    if (!(v.stocks instanceof Array) || v.stocks.length > 8) return null;
-    m.stocks = []; seen = {};
-    for (i = 0; i < v.stocks.length; i++) { var t = v.stocks[i]; if (typeof t !== 'string' || !/^[A-Z][A-Z.]{0,5}$/.test(t)) return null; if (!seen[t]) { seen[t] = 1; m.stocks.push(t); } }
-  }
+  var m = { stocks: null, coins: null, watch: null, names: null }, i, seen;
+  if (v.stocks !== undefined && (m.stocks = vSyms(v.stocks)) === null) return null;
+  if (v.watch !== undefined && (m.watch = vSyms(v.watch)) === null) return null;
   if (v.coins !== undefined) {
     if (!(v.coins instanceof Array) || v.coins.length > 8) return null;
     m.coins = []; seen = {};
     for (i = 0; i < v.coins.length; i++) { var c = v.coins[i]; if (typeof c !== 'string' || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(c)) return null; if (!seen[c]) { seen[c] = 1; m.coins.push(c); } }
   }
-  if ((m.stocks ? m.stocks.length : 3) + (m.coins ? m.coins.length : 3) > 8) return null;
+  if (v.names && typeof v.names === 'object' && !(v.names instanceof Array)) {   // optional display names; bad entries are skipped
+    m.names = {}; var nk = 0;
+    for (var key in v.names) if (Object.prototype.hasOwnProperty.call(v.names, key) && nk < 16) {
+      var nm = v.names[key]; if (SYM_RE.test(key) && typeof nm === 'string' && MKNAME_RE.test(nm)) { m.names[key] = nm; nk++; }
+    }
+  }
+  if ((m.stocks ? m.stocks.length : 3) + (m.watch ? m.watch.length : 0) + (m.coins ? m.coins.length : 0) > 8) return null;
   return m;
 }
 function cfgParse(body) {
@@ -445,7 +487,7 @@ function cfgParse(body) {
     units: pick('units', function (v) { return v === 'f' || v === 'c' ? v : null; }),
     clock: pick('clock', function (v) { return v === '12h' || v === '24h' ? v : null; }),
     custom: pick('custom', vCustom) };
-  var mk = pick('markets', vMarkets); c.stocks = mk ? mk.stocks : null; c.coins = mk ? mk.coins : null;
+  var mk = pick('markets', vMarkets); c.stocks = mk ? mk.stocks : null; c.coins = mk ? mk.coins : null; c.watch = mk ? mk.watch : null; c.names = mk ? mk.names : null;
   return c;
 }
 function cfgFaces() {
