@@ -38,7 +38,7 @@ window.VB = {
   cfgUrl: function () { var u = get('vellum.cfgUrl', ''); return okUrl(u) ? u : ''; },
   saveCfg: function (b) { if (b && b.length <= 16384) put('vellum.cfgJson', b); },
   loadCfg: function () { return VB.cfgUrl() ? get('vellum.cfgJson', '') : ''; },
-  appVersion: function () { return '1.1'; },
+  appVersion: function () { return '1.2'; },
   otaReady: function () { return ''; },
   tzOffset: function (tz) {
     try {

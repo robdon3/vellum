@@ -20,3 +20,8 @@ html,body{width:100%;height:100%;position:fixed;inset:0;overscroll-behavior:none
 #sett .srow .sv{font:500 14px/22px PMono,monospace;letter-spacing:1px}
 .dark #sett .srow .sv{color:#FF6A2B} .paper #sett .srow .sv{color:#C93C14}
 #sett .shd .sx{border:0;padding:8px 0}
+
+.photo-frame {height:390px;display:flex;align-items:center;justify-content:center;background:rgba(128,128,128,.08)}
+.photo-frame img {width:100%;height:100%;object-fit:contain}
+.photo-caption {font:22px/1.25 Georgia,serif;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:12px}
+.photo-credit {font:12px/1.4 monospace;margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

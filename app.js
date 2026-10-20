@@ -3,10 +3,10 @@
 'use strict';
 var VB = window.MOCKVB || window.VB;
 var $ = function (id) { return document.getElementById(id); };
-var DEFAULT_FACES = ['clock', 'weather', 'markets', 'headlines', 'hackernews', 'onthisday'];
+var DEFAULT_FACES = ['clock', 'weather', 'markets', 'headlines', 'hackernews', 'onthisday', 'photos'];
 var FACES = DEFAULT_FACES.slice();
-var LABEL = { clock: 'TIME', weather: 'WEATHER', markets: 'MARKETS', headlines: 'HEADLINES', hackernews: 'HACKER NEWS', onthisday: 'ON THIS DAY', custom: 'NOTE' };
-var ALIAS = { clock: 'clock', weather: 'weather', markets: 'markets', news: 'headlines', headlines: 'headlines', hn: 'hackernews', hackernews: 'hackernews', otd: 'onthisday', onthisday: 'onthisday', custom: 'custom' };
+var LABEL = { clock: 'TIME', weather: 'WEATHER', markets: 'MARKETS', headlines: 'HEADLINES', hackernews: 'HACKER NEWS', onthisday: 'ON THIS DAY', photos: 'PHOTOS', custom: 'NOTE' };
+var ALIAS = { clock: 'clock', weather: 'weather', markets: 'markets', news: 'headlines', headlines: 'headlines', hn: 'hackernews', hackernews: 'hackernews', otd: 'onthisday', onthisday: 'onthisday', photos: 'photos', pictures: 'photos', custom: 'custom' };
 /* Remote display config (secret gist). Read as data only; every field is validated and length-limited. */
 var CFG_URL = VB.cfgUrl();   // pasted once in Settings (localStorage); never shipped in the page
 var CFG = null, cfgInflight = false, cfgLast = 0;
@@ -418,6 +418,65 @@ R.onthisday = function (f) {
   fit('.ev', 2);
 };
 
+// Fixed source ids: config never supplies feed or image hosts.
+function photoOptions(sections, publicWeb) {
+  const p = { sources: publicWeb ? ['potd','wiki-news'] : ['potd','wiki-news','bbc'], rotate_seconds: 20, captions: true };
+  sections.slice().reverse().forEach(s => {
+    const v = s && s.photos; if (!v || typeof v !== 'object') return;
+    if (Array.isArray(v.sources) && v.sources.length && v.sources.length <= 4 && new Set(v.sources).size === v.sources.length && v.sources.every(x => ['potd','wiki-news','bbc','guardian'].includes(x))) p.sources = v.sources.slice();
+    if (Number.isInteger(v.rotate_seconds) && v.rotate_seconds >= 5 && v.rotate_seconds <= 3600) p.rotate_seconds = v.rotate_seconds;
+    if (typeof v.captions === 'boolean') p.captions = v.captions;
+  });
+  if (publicWeb) { p.sources = p.sources.filter(x => x === 'potd' || x === 'wiki-news'); if (!p.sources.length) p.sources = ['potd','wiki-news']; }
+  return p;
+}
+function photoText(s) { return String(s || '').replace(/<[^>]*>/g, '').replace(/&(?:amp|lt|gt|quot|#39);/g, x => ({'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&#39;':"'"}[x])).replace(/\s+/g,' ').trim(); }
+function photoImage(u, width, original) {
+  if (original && original < 200) return null;
+  if (!/^https:\/\/(?:upload\.wikimedia\.org|thumb\.wikimedia\.org)\//.test(u || '')) return null;
+  if (/wikimedia\.org\//.test(u)) {
+    if (/\.(?:svg|webm|ogv)(?:[/?]|$)/i.test(u) && !/\.(?:jpe?g|png)(?:[?#]|$)/i.test(u)) return null;
+    return u.replace(/\/\d+px-/g, '/' + width + 'px-');
+  }
+  return u;
+}
+function photoFeedUrl() { const d = new Date(Date.now() - 6*3600000); return 'https://api.wikimedia.org/feed/v1/wikipedia/en/featured/' + d.toISOString().slice(0,10).replace(/-/g,'/'); }
+function photoWiki(j, options, width) {
+  j = j && typeof j === 'object' ? j : {};
+  const array = v => Array.isArray(v) ? v.filter(x => x && typeof x === 'object') : [];
+  const out = [];
+  const add = (im, caption, credit, license, source, page) => {
+    const url = im && /^https:\/\/(?:upload|thumb)\.wikimedia\.org\//.test(im.source || '') && photoImage(im.source, width, im.width);
+    if (url && !out.some(x => x.url === url)) out.push({url, caption:photoText(caption), credit:photoText(credit), license:photoText(license), source, page: /^https:\/\//.test(page || '') ? page : 'https://commons.wikimedia.org/'});
+  };
+  if (options.sources.includes('potd') && j.image) { const i=j.image; add(i.thumbnail, i.description && i.description.text, (i.artist && i.artist.text) || (i.credit && i.credit.text) || 'Wikimedia Commons', i.license && i.license.type || 'Wikimedia Commons (see file page)', 'Wikimedia POTD', i.file_page); }
+  if (options.sources.includes('wiki-news')) {
+    array(j.news).forEach(n => array(n.links).forEach(p => add(p.thumbnail,n.story,'Wikipedia / Wikimedia Commons','Wikimedia Commons (see file page)','Wikipedia news',p.content_urls && p.content_urls.desktop && p.content_urls.desktop.page)));
+    array(j.onthisday).forEach(n => array(n.pages).forEach(p => add(p.thumbnail,n.year + ' · ' + n.text,'Wikipedia / Wikimedia Commons','Wikimedia Commons (see file page)','On this day',p.content_urls && p.content_urls.desktop && p.content_urls.desktop.page)));
+  }
+  return out.slice(0,12);
+}
+let photoList = [], photoFetch = 0, photoSlot = 0, photoVisit = 0, photoBusy = false;
+try { photoList = JSON.parse(localStorage.getItem('vellum.photos') || '[]').filter(x => photoImage(x.url,960)).slice(0,12); } catch(e) {}
+async function loadPhotos() {
+  if (photoBusy || Date.now()-photoFetch < 1800000) return;
+  photoBusy=true; photoFetch=Date.now();
+  try {
+    const r=await fetch(photoFeedUrl()); if(!r.ok) throw Error(r.status);
+    const list=photoWiki(await r.json(), CFG && CFG.photos || photoOptions([],true),window.innerWidth < 600 ? 500 : 960);
+    if(list.length) {
+      photoList=list; localStorage.setItem('vellum.photos',JSON.stringify(list));
+      if ('caches' in window) { const cache=await caches.open('vellum-photos'); for(const x of list) { try { await cache.add(new Request(x.url,{mode:'cors'})); } catch(e) {} } for(const u of await cache.keys()) if(!list.some(x=>x.url===u.url)) await cache.delete(u); }
+    }
+  } catch(e) {} finally {photoBusy=false; if(FACES[cur]==='photos') draw();}
+}
+R.photos = function(f) {
+  loadPhotos(); const options=CFG && CFG.photos || photoOptions([],true);
+  const x=photoList[(photoSlot+photoVisit)%Math.max(1,photoList.length)];
+  if(!x) {f.innerHTML=kicker('PHOTOS')+'<div class="empty">No photos yet — waiting for Wi-Fi</div>';return;}
+  f.innerHTML=kicker('PHOTOS')+'<div class="photo-frame"><img id="photo-image" alt="'+esc(x.caption)+'" src="'+esc(x.url)+'"></div>'+(options.captions?'<div class="photo-caption">'+esc(x.caption)+'</div>':'')+'<div class="photo-credit">'+esc('Photo: '+x.credit+' · '+x.license+' · '+x.source)+'</div>';
+  const im=f.querySelector('img'); im.onerror=async function(){ try {const r=await (await caches.open('vellum-photos')).match(x.url);if(r) {im.onerror=null; const blobUrl=URL.createObjectURL(await r.blob()); im.onload=()=>URL.revokeObjectURL(blobUrl); im.src=blobUrl;return;}}catch(e){} im.parentNode.innerHTML='<div class="empty">No photos yet — waiting for Wi-Fi</div>'; };
+};
 /* ---------------------------------------------------------------- remote config */
 function vStr(v, n, multi) {
   if (typeof v !== 'string' || !v.length || v.length > n) return null;
@@ -428,8 +487,8 @@ function vNum(v, lo, hi) { return (typeof v === 'number' && isFinite(v) && v >= 
 function vFaces(v) {
   if (!(v instanceof Array) || !v.length || v.length > 8) return null;
   var out = [], seen = {};
-  for (var i = 0; i < v.length; i++) { var f = typeof v[i] === 'string' ? ALIAS[v[i]] : null; if (!f) return null; if (!seen[f]) { seen[f] = 1; out.push(f); } }
-  return out;
+  for (var i = 0; i < v.length; i++) { var f = typeof v[i] === 'string' ? ALIAS[v[i]] : null; if (typeof f !== 'string') continue; if (!seen[f]) { seen[f] = 1; out.push(f); } }
+  return out.length ? out : null;
 }
 function vLoc(v) {
   if (!v || typeof v !== 'object') return null;
@@ -480,7 +539,8 @@ function cfgParse(body) {
   var dd = (j.defaults && typeof j.defaults === 'object') ? j.defaults : {}, bb = (j.web && typeof j.web === 'object') ? j.web : {};   // the 'web' section, then shared defaults
   function pick(k, fn) { var a = bb.hasOwnProperty(k) ? fn(bb[k]) : null; if (a !== null) return a; return dd.hasOwnProperty(k) ? fn(dd[k]) : null; }
   var c = { version: ver,
-    faces: pick('faces', vFaces),
+    faces: pick('faces2', vFaces) || pick('faces', vFaces),
+    photos: photoOptions([bb, dd], true),
     rotate: pick('rotate_seconds', function (v) { return (v === 0 || vNum(v, 10, 3600) !== null) && v % 1 === 0 ? v : null; }),
     theme: pick('theme', function (v) { return v === 'dark' || v === 'paper' ? v : null; }),
     loc: pick('location', vLoc),
@@ -584,6 +644,7 @@ function draw() {
   header(); footer();
 }
 function go(n) {
+  if (FACES[(n + FACES.length) % FACES.length] === 'photos') photoVisit++;
   cur = (n + FACES.length) % FACES.length; lastFlip = Date.now();
   var f = $('face'); f.className = 'fade';
   setTimeout(function () { draw(); f.className = ''; }, 180);
@@ -668,6 +729,7 @@ setInterval(function () {
   if (!visible) return;
   if (d.getSeconds() !== lastSec) {
     lastSec = d.getSeconds();
+    if (FACES[cur] === 'photos') { const slot=Math.floor(Date.now()/((CFG && CFG.photos || photoOptions([],true)).rotate_seconds*1000)); if(slot!==photoSlot){photoSlot=slot;draw();} }
     if (FACES[cur] === 'clock') draw();
     else if (d.getMinutes() !== lastMin) { lastMin = d.getMinutes(); header(); footer(); }
     if (d.getSeconds() % 30 === 0) loadAll(false);
